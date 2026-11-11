@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "rpcpeek"
-version = "0.1.0"
+version = "0.2.0"
 description = "Extract RPC interface definitions and method tables from Windows PE binaries"
 requires-python = ">=3.10"
 license = "MIT"
