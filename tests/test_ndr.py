@@ -39,6 +39,94 @@ def lsasrv_extractor(lsasrv_bytes):
     return RpcExtractor(lsasrv_bytes, pe_info, parser)
 
 
+class TestParamTypeClassification:
+    def test_mpsvc_method_161_param_types(self, extractor):
+        interfaces = extractor.extract_interfaces()
+        ndr20 = [i for i in interfaces if i.syntax == "ndr20" and i.method_count == 238][0]
+        m = ndr20.methods[161]
+        assert m.param_types == ["int", "struct*", "int", "out*"]
+
+    def test_mpsvc_method_0_has_param_types(self, extractor):
+        interfaces = extractor.extract_interfaces()
+        ndr20 = [i for i in interfaces if i.syntax == "ndr20" and i.method_count == 238][0]
+        m = ndr20.methods[0]
+        assert len(m.param_types) > 0
+
+    def test_param_types_only_known_categories(self, extractor):
+        interfaces = extractor.extract_interfaces()
+        ndr20 = [i for i in interfaces if i.syntax == "ndr20" and i.method_count == 238][0]
+        known = {"int", "str", "wstr", "struct", "array", "ctx", "ptr", "out"}
+        for m in ndr20.methods:
+            for t in m.param_types:
+                base = t.rstrip("*")
+                assert base in known, f"method {m.index}: unknown type '{t}'"
+
+    def test_methods_with_params_have_types(self, extractor):
+        interfaces = extractor.extract_interfaces()
+        ndr20 = [i for i in interfaces if i.syntax == "ndr20" and i.method_count == 238][0]
+        has_types = sum(1 for m in ndr20.methods if m.param_types)
+        assert has_types > 180
+
+    def test_ndr64_methods_no_param_types(self, extractor):
+        interfaces = extractor.extract_interfaces()
+        ndr64 = [i for i in interfaces if i.syntax == "ndr64"]
+        for iface in ndr64:
+            for m in iface.methods:
+                assert m.param_types == []
+
+    def test_lsasrv_samr_has_param_types(self, lsasrv_extractor):
+        interfaces = lsasrv_extractor.extract_interfaces()
+        samr = [i for i in interfaces if "12345778" in i.uuid and i.syntax == "ndr20"][0]
+        has_types = sum(1 for m in samr.methods if m.param_types)
+        assert has_types > 60
+
+    def test_lsasrv_samr_method_5_has_structs(self, lsasrv_extractor):
+        interfaces = lsasrv_extractor.extract_interfaces()
+        samr = [i for i in interfaces if "12345778" in i.uuid and i.syntax == "ndr20"][0]
+        m5 = samr.methods[5]
+        struct_params = [t for t in m5.param_types if "struct" in t]
+        assert len(struct_params) > 0
+
+
+class TestAuthHeuristic:
+    def test_scan_fills_auth_check(self, extractor):
+        interfaces = extractor.extract_interfaces()
+        ndr20 = [i for i in interfaces if i.syntax == "ndr20" and i.method_count == 238][0]
+        extractor.scan_auth_checks(interfaces)
+        filled = sum(1 for m in ndr20.methods if m.auth_check in ("yes", "none"))
+        assert filled == len(ndr20.methods)
+
+    def test_method_161_auth_yes(self, extractor):
+        interfaces = extractor.extract_interfaces()
+        ndr20 = [i for i in interfaces if i.syntax == "ndr20" and i.method_count == 238][0]
+        extractor.scan_auth_checks(interfaces)
+        assert ndr20.methods[161].auth_check == "yes"
+
+    def test_has_both_yes_and_none(self, extractor):
+        interfaces = extractor.extract_interfaces()
+        ndr20 = [i for i in interfaces if i.syntax == "ndr20" and i.method_count == 238][0]
+        extractor.scan_auth_checks(interfaces)
+        values = set(m.auth_check for m in ndr20.methods)
+        assert "yes" in values
+        assert "none" in values
+
+    def test_without_scan_auth_empty(self):
+        from rpcpeek.models import RpcMethod
+        m = RpcMethod(index=0, handler_rva=0x1000)
+        assert m.auth_check == ""
+
+    def test_lsasrv_auth_scan(self, lsasrv_extractor):
+        interfaces = lsasrv_extractor.extract_interfaces()
+        lsasrv_extractor.scan_auth_checks(interfaces)
+        ndr20 = [i for i in interfaces if i.syntax == "ndr20" and i.methods]
+        filled = 0
+        for iface in ndr20:
+            for m in iface.methods:
+                if m.auth_check in ("yes", "none"):
+                    filled += 1
+        assert filled > 0
+
+
 class TestRpcExtractor:
     def test_extract_imports_has_rpcrt4(self, extractor):
         imports = extractor.extract_imports()

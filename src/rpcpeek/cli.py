@@ -10,7 +10,7 @@ from rpcpeek.ndr import RpcExtractor
 from rpcpeek.known_uuids import DB
 
 
-def analyze_file(filepath: Path) -> dict:
+def analyze_file(filepath: Path, triage: bool = False) -> dict:
     data = filepath.read_bytes()
     parser = PEParser(data)
     pe_info = parser.parse()
@@ -23,6 +23,9 @@ def analyze_file(filepath: Path) -> dict:
     }
     rpc_imports = {k: v for k, v in rpc_imports.items() if v}
     interfaces = extractor.extract_interfaces()
+
+    if triage:
+        extractor.scan_auth_checks(interfaces)
 
     return {
         "file": pe_info.filename,
@@ -111,6 +114,49 @@ def print_scan(results: list):
         print(f"{name:<{name_w}}  {n_iface:>{iface_w}} {iw:<10}  {n_methods:>{method_w}} {mw}")
 
 
+def _triage_score(method):
+    score = 0
+    for t in method.param_types:
+        base = t.rstrip("*")
+        if base in ("struct", "str", "wstr"):
+            score += 2
+        elif base == "array":
+            score += 1
+    if method.auth_check == "none":
+        score += 5
+    return score
+
+
+def print_triage(result: dict):
+    filename = result["file"]
+    interfaces = result["interfaces"]
+
+    if not interfaces:
+        print(f"{filename}: no RPC interfaces found")
+        return
+
+    for iface in interfaces:
+        if iface.syntax != "ndr20":
+            continue
+
+        print(f"\n{filename}")
+        name = DB.name(iface.uuid)
+        name_tag = f"{name} " if name else ""
+        print(f"  Interface: {name_tag}{iface.uuid}")
+        print(f"  Methods:   {iface.method_count}")
+        print()
+
+        methods = sorted(iface.methods, key=lambda m: (-_triage_score(m), m.index))
+
+        print(f"  {'idx':>5}  {'handler RVA':<14}  {'auth':<6}  params")
+        print(f"  {'-' * 60}")
+
+        for m in methods:
+            params_str = f"[{', '.join(m.param_types)}]" if m.param_types else "[]"
+            auth_str = m.auth_check or "?"
+            print(f"  {m.index:>5}  {m.handler_hex:<14}  {auth_str:<6}  {params_str}")
+
+
 def print_diff(result_a: dict, result_b: dict):
     def iface_map(result):
         m = {}
@@ -176,6 +222,7 @@ def main():
   %(prog)s MpSvc.dll --format json
   %(prog)s MpSvc.dll --interface C503F532
   %(prog)s --scan Platform/
+  %(prog)s MpSvc.dll --triage
   %(prog)s --diff old.dll new.dll""",
     )
     parser.add_argument("dll", nargs="?", help="Path to a single DLL to analyze")
@@ -187,6 +234,8 @@ def main():
     parser.add_argument("--interface", default=None, help="Filter by interface UUID (substring match)")
     parser.add_argument("--summary", action="store_true", help="Only show files that have RPC interfaces")
     parser.add_argument("--scan", metavar="PATH", help="Quick scan: one line per DLL with RPC interfaces")
+    parser.add_argument("--triage", action="store_true",
+                        help="Show per-method param types and auth heuristic, sorted by attack surface")
     parser.add_argument("--diff", nargs=2, metavar="DLL", help="Compare two DLLs")
 
     args = parser.parse_args()
@@ -252,7 +301,7 @@ def main():
     results = []
     for f in files:
         try:
-            result = analyze_file(f)
+            result = analyze_file(f, triage=args.triage)
             if args.interface:
                 result = filter_interfaces(result, args.interface)
             results.append(result)
@@ -275,6 +324,9 @@ def main():
         print(json.dumps(results, indent=2, default=serialize))
     elif args.format == "csv":
         print_csv(results)
+    elif args.triage:
+        for r in results:
+            print_triage(r)
     elif args.summary:
         print_summary(results)
     else:

@@ -16,6 +16,31 @@ NDR64_TRANSFER_SYNTAX = bytes([
 ])
 
 
+_FC_BASETYPE = frozenset(range(0x01, 0x11)) | {0xB8, 0xB9}
+_FC_POINTER = frozenset({0x11, 0x12, 0x13, 0x14})
+_FC_STRUCT = frozenset({0x15, 0x16, 0x17, 0x18, 0x19, 0x1A})
+_FC_ARRAY = frozenset({0x1B, 0x1C, 0x1D, 0x1E, 0x1F, 0x20})
+_FC_STRING = frozenset({0x22, 0x23, 0x24})
+_FC_WSTRING = frozenset({0x25})
+_FC_CONTEXT = frozenset({0x2C})
+
+
+def _classify_fc(fc):
+    if fc in _FC_BASETYPE:
+        return "int"
+    if fc in _FC_STRING:
+        return "str"
+    if fc in _FC_WSTRING:
+        return "wstr"
+    if fc in _FC_STRUCT:
+        return "struct"
+    if fc in _FC_ARRAY:
+        return "array"
+    if fc in _FC_CONTEXT:
+        return "ctx"
+    return "ptr"
+
+
 class RpcExtractor:
     def __init__(self, data: bytes, pe_info: PEInfo, parser: PEParser):
         self.data = data
@@ -63,11 +88,59 @@ class RpcExtractor:
 
         return result
 
+    def _get_type_format_base(self, stub_desc_ptr):
+        sd_off = self._r2o(stub_desc_ptr - self.pe.image_base)
+        if sd_off is None:
+            return None
+        try:
+            type_fmt_ptr = struct.unpack_from("<Q", self.data, sd_off + 0x40)[0]
+            return self._r2o(type_fmt_ptr - self.pe.image_base)
+        except (struct.error, IndexError):
+            return None
+
+    def _follow_pointer(self, type_base, offset):
+        ptr_attrs = self.data[type_base + offset + 1]
+        if ptr_attrs & 0x02:
+            return _classify_fc(self.data[type_base + offset + 2])
+        rel = struct.unpack_from("<h", self.data, type_base + offset + 2)[0]
+        return _classify_fc(self.data[type_base + offset + 2 + rel])
+
+    def _parse_param_descs(self, start, count, type_fmt_base):
+        types = []
+        for i in range(count):
+            off = start + i * 6
+            attrs = struct.unpack_from("<H", self.data, off)[0]
+            type_info = struct.unpack_from("<H", self.data, off + 4)[0]
+
+            if attrs & 0x0020:
+                continue
+            if (attrs & 0x0010) and not (attrs & 0x0008):
+                types.append("out*")
+                continue
+            if attrs & 0x0040:
+                types.append("int")
+                continue
+
+            is_simple_ref = bool(attrs & 0x0100)
+            try:
+                fc = self.data[type_fmt_base + type_info]
+                if is_simple_ref:
+                    types.append(_classify_fc(fc) + "*")
+                elif fc in _FC_POINTER:
+                    types.append(self._follow_pointer(type_fmt_base, type_info) + "*")
+                else:
+                    types.append(_classify_fc(fc))
+            except (IndexError, struct.error):
+                types.append("ptr")
+
+        return types
+
     def _parse_ndr20_methods(self, io: int, do: int, method_count: int) -> list:
-        _, srv_dispatch, proc_string, fmt_offset = struct.unpack_from("<QQQQ", self.data, io)
+        stub_desc_ptr, srv_dispatch, proc_string, fmt_offset = struct.unpack_from("<QQQQ", self.data, io)
         do_off = self._r2o(srv_dispatch - self.pe.image_base)
         fo = self._r2o(fmt_offset - self.pe.image_base)
         po = self._r2o(proc_string - self.pe.image_base)
+        type_fmt_base = self._get_type_format_base(stub_desc_ptr)
 
         methods = []
         if not (do_off and fo and po):
@@ -91,14 +164,42 @@ class RpcExtractor:
 
                 method.client_buffer = struct.unpack_from("<H", header, q)[0]
                 method.server_buffer = struct.unpack_from("<H", header, q + 2)[0]
+                oi2_flags = header[q + 4]
                 q += 5
                 method.param_count = header[q]
+
+                pd_start = po + fmt_off + q + 1
+                if oi2_flags & 0x40:
+                    pd_start += self.data[pd_start]
+                if type_fmt_base is not None and method.param_count > 0:
+                    method.param_types = self._parse_param_descs(
+                        pd_start, method.param_count, type_fmt_base
+                    )
             except Exception as ex:
                 method.error = str(ex)
 
             methods.append(method)
 
         return methods
+
+    def scan_auth_checks(self, interfaces):
+        marker = struct.pack("<I", 0x80070005)
+        for iface in interfaces:
+            if not iface.methods:
+                continue
+            sorted_m = sorted(iface.methods, key=lambda m: m.handler_rva)
+            for i, method in enumerate(sorted_m):
+                start = self._r2o(method.handler_rva)
+                if start is None:
+                    method.auth_check = "?"
+                    continue
+                if i + 1 < len(sorted_m):
+                    end = self._r2o(sorted_m[i + 1].handler_rva)
+                    if end is None or end <= start:
+                        end = min(start + 0x2000, len(self.data))
+                else:
+                    end = min(start + 0x2000, len(self.data))
+                method.auth_check = "yes" if marker in self.data[start:end] else "none"
 
     def _parse_ndr64_methods(self, io: int, do: int, method_count: int) -> list:
         n_count = struct.unpack_from("<Q", self.data, io + 0x30)[0]

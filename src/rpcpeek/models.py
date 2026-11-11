@@ -25,6 +25,8 @@ class RpcMethod:
     client_buffer: int = 0
     server_buffer: int = 0
     param_count: int = 0
+    param_types: list = field(default_factory=list)
+    auth_check: str = ""
     error: str = ""
 
     @property

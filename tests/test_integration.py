@@ -98,6 +98,52 @@ class TestMpSvcAnalysis:
                     assert syntaxes["ndr20"].methods[j].handler_rva == syntaxes["ndr64"].methods[j].handler_rva
 
 
+class TestMpSvcTriage:
+    @pytest.fixture
+    def triage_result(self, fixture_dll):
+        return analyze_file(fixture_dll, triage=True)
+
+    def test_method_161_param_types(self, triage_result):
+        ndr20 = [i for i in triage_result["interfaces"] if i.syntax == "ndr20"]
+        m = ndr20[0].methods[161]
+        assert m.param_types == ["int", "struct*", "int", "out*"]
+
+    def test_method_161_auth_yes(self, triage_result):
+        ndr20 = [i for i in triage_result["interfaces"] if i.syntax == "ndr20"]
+        assert ndr20[0].methods[161].auth_check == "yes"
+
+    def test_all_methods_have_auth(self, triage_result):
+        ndr20 = [i for i in triage_result["interfaces"] if i.syntax == "ndr20" and i.methods]
+        for iface in ndr20:
+            for m in iface.methods:
+                assert m.auth_check in ("yes", "none"), f"method {m.index}: auth_check='{m.auth_check}'"
+
+    def test_param_types_populated(self, triage_result):
+        ndr20 = [i for i in triage_result["interfaces"] if i.syntax == "ndr20" and i.method_count == 238][0]
+        with_types = sum(1 for m in ndr20.methods if m.param_types)
+        assert with_types > 180
+
+    def test_has_struct_params(self, triage_result):
+        ndr20 = [i for i in triage_result["interfaces"] if i.syntax == "ndr20" and i.method_count == 238][0]
+        has_struct = any("struct" in t for m in ndr20.methods for t in m.param_types)
+        assert has_struct
+
+    def test_has_wstr_params(self, triage_result):
+        ndr20 = [i for i in triage_result["interfaces"] if i.syntax == "ndr20" and i.method_count == 238][0]
+        has_wstr = any("wstr" in t for m in ndr20.methods for t in m.param_types)
+        assert has_wstr
+
+    def test_has_no_auth_methods(self, triage_result):
+        ndr20 = [i for i in triage_result["interfaces"] if i.syntax == "ndr20" and i.method_count == 238][0]
+        no_auth = sum(1 for m in ndr20.methods if m.auth_check == "none")
+        assert no_auth > 50
+
+    def test_non_triage_no_auth_check(self, parsed_result):
+        ndr20 = [i for i in parsed_result["interfaces"] if i.syntax == "ndr20"]
+        for m in ndr20[0].methods:
+            assert m.auth_check == ""
+
+
 class TestLsasrvAnalysis:
     def test_ndr20_interface_count(self, lsasrv_result):
         ndr20 = [i for i in lsasrv_result["interfaces"] if i.syntax == "ndr20"]
@@ -433,6 +479,107 @@ class TestLsasrvCLI:
         )
         assert result.returncode == 0
         assert "lsasrv" in result.stdout
+
+
+class TestMpSvcTriageCLI:
+    @pytest.fixture
+    def dll_path(self, fixture_dll):
+        return str(fixture_dll)
+
+    def test_triage_output_format(self, dll_path):
+        result = subprocess.run(
+            [sys.executable, "-m", "rpcpeek", dll_path, "--triage"],
+            capture_output=True, text=True,
+        )
+        assert result.returncode == 0
+        assert "auth" in result.stdout
+        assert "params" in result.stdout
+        assert "Interface:" in result.stdout
+
+    def test_triage_shows_param_types(self, dll_path):
+        result = subprocess.run(
+            [sys.executable, "-m", "rpcpeek", dll_path, "--triage"],
+            capture_output=True, text=True,
+        )
+        assert "struct*" in result.stdout
+        assert "int" in result.stdout
+        assert "out*" in result.stdout
+
+    def test_triage_shows_auth(self, dll_path):
+        result = subprocess.run(
+            [sys.executable, "-m", "rpcpeek", dll_path, "--triage"],
+            capture_output=True, text=True,
+        )
+        assert "yes" in result.stdout
+        assert "none" in result.stdout
+
+    def test_triage_method_161(self, dll_path):
+        result = subprocess.run(
+            [sys.executable, "-m", "rpcpeek", dll_path, "--triage"],
+            capture_output=True, text=True,
+        )
+        lines = result.stdout.split("\n")
+        m161 = [l for l in lines if l.strip().startswith("161")]
+        assert len(m161) == 1
+        assert "struct*" in m161[0]
+        assert "yes" in m161[0]
+
+    def test_triage_skips_ndr64(self, dll_path):
+        result = subprocess.run(
+            [sys.executable, "-m", "rpcpeek", dll_path, "--triage"],
+            capture_output=True, text=True,
+        )
+        assert "[ndr64]" not in result.stdout
+
+    def test_triage_sorts_interesting_first(self, dll_path):
+        result = subprocess.run(
+            [sys.executable, "-m", "rpcpeek", dll_path, "--triage"],
+            capture_output=True, text=True,
+        )
+        lines = result.stdout.split("\n")
+        data_lines = [l for l in lines if l.strip() and l.strip()[0].isdigit()]
+        if len(data_lines) >= 2:
+            assert "none" in data_lines[0] or "struct" in data_lines[0] or "wstr" in data_lines[0]
+
+    def test_triage_with_interface_filter(self, dll_path):
+        result = subprocess.run(
+            [sys.executable, "-m", "rpcpeek", dll_path, "--triage", "--interface", "C503F532"],
+            capture_output=True, text=True,
+        )
+        assert result.returncode == 0
+        assert "C503F532" in result.stdout
+        assert result.stdout.count("Interface:") == 1
+
+    def test_triage_json_includes_auth(self, dll_path):
+        result = subprocess.run(
+            [sys.executable, "-m", "rpcpeek", dll_path, "--triage", "--json"],
+            capture_output=True, text=True,
+        )
+        assert result.returncode == 0
+        data = json.loads(result.stdout)
+        ndr20 = [i for i in data[0]["interfaces"] if i.get("syntax") == "ndr20"]
+        m161 = ndr20[0]["methods"][161]
+        assert m161["param_types"] == ["int", "struct*", "int", "out*"]
+        assert m161["auth_check"] == "yes"
+
+    def test_triage_norpc_dll(self, norpc_dll):
+        result = subprocess.run(
+            [sys.executable, "-m", "rpcpeek", str(norpc_dll), "--triage"],
+            capture_output=True, text=True,
+        )
+        assert result.returncode == 1
+        assert "no RPC interfaces found" in result.stdout
+
+
+class TestLsasrvTriageCLI:
+    def test_triage_output(self, lsasrv_dll):
+        result = subprocess.run(
+            [sys.executable, "-m", "rpcpeek", str(lsasrv_dll), "--triage"],
+            capture_output=True, text=True,
+        )
+        assert result.returncode == 0
+        assert "LSARPC" in result.stdout
+        assert "struct" in result.stdout
 
 
 class TestDirModeCLI:

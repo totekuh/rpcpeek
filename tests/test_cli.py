@@ -94,6 +94,99 @@ class TestFilterInterfaces:
         assert len(filtered["interfaces"]) == 0
 
 
+class TestTriageScore:
+    def test_struct_scores_higher(self):
+        from rpcpeek.cli import _triage_score
+        m_struct = RpcMethod(index=0, handler_rva=0x1000, param_types=["struct*"], auth_check="yes")
+        m_int = RpcMethod(index=1, handler_rva=0x2000, param_types=["int"], auth_check="yes")
+        assert _triage_score(m_struct) > _triage_score(m_int)
+
+    def test_no_auth_scores_higher(self):
+        from rpcpeek.cli import _triage_score
+        m_no = RpcMethod(index=0, handler_rva=0x1000, param_types=["int"], auth_check="none")
+        m_yes = RpcMethod(index=1, handler_rva=0x2000, param_types=["int"], auth_check="yes")
+        assert _triage_score(m_no) > _triage_score(m_yes)
+
+    def test_struct_plus_no_auth_highest(self):
+        from rpcpeek.cli import _triage_score
+        m_best = RpcMethod(index=0, handler_rva=0x1000, param_types=["struct*", "wstr*"], auth_check="none")
+        m_mid = RpcMethod(index=1, handler_rva=0x2000, param_types=["struct*"], auth_check="yes")
+        m_low = RpcMethod(index=2, handler_rva=0x3000, param_types=["int"], auth_check="yes")
+        assert _triage_score(m_best) > _triage_score(m_mid) > _triage_score(m_low)
+
+    def test_empty_params_zero_auth_yes(self):
+        from rpcpeek.cli import _triage_score
+        m = RpcMethod(index=0, handler_rva=0x1000, param_types=[], auth_check="yes")
+        assert _triage_score(m) == 0
+
+    def test_array_scores_one(self):
+        from rpcpeek.cli import _triage_score
+        m = RpcMethod(index=0, handler_rva=0x1000, param_types=["array*"], auth_check="yes")
+        assert _triage_score(m) == 1
+
+
+class TestPrintTriage:
+    def test_basic_output(self, capsys):
+        from rpcpeek.cli import print_triage
+        iface = RpcInterface(uuid="TEST-UUID", method_count=2, syntax="ndr20")
+        iface.methods.append(RpcMethod(index=0, handler_rva=0x1000, param_types=["int", "struct*"], auth_check="none"))
+        iface.methods.append(RpcMethod(index=1, handler_rva=0x2000, param_types=["int"], auth_check="yes"))
+        result = {"file": "test.dll", "interfaces": [iface]}
+        print_triage(result)
+        captured = capsys.readouterr()
+        assert "TEST-UUID" in captured.out
+        assert "[int, struct*]" in captured.out
+        assert "none" in captured.out
+        assert "yes" in captured.out
+
+    def test_sorts_interesting_first(self, capsys):
+        from rpcpeek.cli import print_triage
+        iface = RpcInterface(uuid="TEST-UUID", method_count=2, syntax="ndr20")
+        iface.methods.append(RpcMethod(index=0, handler_rva=0x1000, param_types=["int"], auth_check="yes"))
+        iface.methods.append(RpcMethod(index=1, handler_rva=0x2000, param_types=["struct*", "wstr*"], auth_check="none"))
+        result = {"file": "test.dll", "interfaces": [iface]}
+        print_triage(result)
+        captured = capsys.readouterr()
+        lines = [l.strip() for l in captured.out.strip().split("\n") if l.strip().startswith(("0", "1"))]
+        assert lines[0].startswith("1")
+
+    def test_skips_ndr64(self, capsys):
+        from rpcpeek.cli import print_triage
+        ndr20 = RpcInterface(uuid="TEST-UUID", method_count=1, syntax="ndr20")
+        ndr20.methods.append(RpcMethod(index=0, handler_rva=0x1000, param_types=["int"], auth_check="none"))
+        ndr64 = RpcInterface(uuid="TEST-UUID", method_count=1, syntax="ndr64")
+        ndr64.methods.append(RpcMethod(index=0, handler_rva=0x1000))
+        result = {"file": "test.dll", "interfaces": [ndr20, ndr64]}
+        print_triage(result)
+        captured = capsys.readouterr()
+        assert captured.out.count("Interface:") == 1
+
+    def test_no_interfaces(self, capsys):
+        from rpcpeek.cli import print_triage
+        result = {"file": "empty.dll", "interfaces": []}
+        print_triage(result)
+        captured = capsys.readouterr()
+        assert "no RPC interfaces found" in captured.out
+
+    def test_empty_param_types(self, capsys):
+        from rpcpeek.cli import print_triage
+        iface = RpcInterface(uuid="TEST-UUID", method_count=1, syntax="ndr20")
+        iface.methods.append(RpcMethod(index=0, handler_rva=0x1000, param_types=[], auth_check="none"))
+        result = {"file": "test.dll", "interfaces": [iface]}
+        print_triage(result)
+        captured = capsys.readouterr()
+        assert "[]" in captured.out
+
+    def test_auth_unknown_shows_question(self, capsys):
+        from rpcpeek.cli import print_triage
+        iface = RpcInterface(uuid="TEST-UUID", method_count=1, syntax="ndr20")
+        iface.methods.append(RpcMethod(index=0, handler_rva=0x1000, param_types=["int"]))
+        result = {"file": "test.dll", "interfaces": [iface]}
+        print_triage(result)
+        captured = capsys.readouterr()
+        assert "?" in captured.out
+
+
 class TestPrintDiff:
     def test_no_differences(self, capsys):
         iface = RpcInterface(uuid="TEST", method_count=1, syntax="ndr20")
@@ -366,6 +459,45 @@ class TestMainDirect:
         captured = capsys.readouterr()
         assert "lsasrv" in captured.out
         assert "MpSvc" not in captured.out
+
+    def test_triage_output(self, fixture_dll, capsys, monkeypatch):
+        code = run_main(monkeypatch, [str(fixture_dll), "--triage"])
+        assert code == 0
+        captured = capsys.readouterr()
+        assert "auth" in captured.out
+        assert "params" in captured.out
+        assert "struct*" in captured.out
+
+    def test_triage_with_interface(self, fixture_dll, capsys, monkeypatch):
+        code = run_main(monkeypatch, [str(fixture_dll), "--triage", "--interface", "C503F532"])
+        assert code == 0
+        captured = capsys.readouterr()
+        assert "C503F532" in captured.out
+        assert captured.out.count("Interface:") == 1
+
+    def test_triage_json(self, fixture_dll, capsys, monkeypatch):
+        code = run_main(monkeypatch, [str(fixture_dll), "--triage", "--json"])
+        assert code == 0
+        captured = capsys.readouterr()
+        data = json.loads(captured.out)
+        ndr20 = [i for i in data[0]["interfaces"] if i.get("syntax") == "ndr20"]
+        m161 = ndr20[0]["methods"][161]
+        assert "param_types" in m161
+        assert "auth_check" in m161
+
+    def test_triage_norpc(self, norpc_dll, capsys, monkeypatch):
+        code = run_main(monkeypatch, [str(norpc_dll), "--triage"])
+        assert code == 1
+        captured = capsys.readouterr()
+        assert "no RPC interfaces found" in captured.out
+
+    def test_triage_dir_mode(self, capsys, monkeypatch):
+        from tests.conftest import FIXTURE_DIR
+        code = run_main(monkeypatch, ["--dir", str(FIXTURE_DIR), "--triage"])
+        assert code == 0
+        captured = capsys.readouterr()
+        assert "MpSvc" in captured.out
+        assert "lsasrv" in captured.out
 
 
 class TestCLISubprocess:
