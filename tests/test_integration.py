@@ -496,6 +496,59 @@ class TestDirModeCLI:
                 assert "12345778" in iface["uuid"]
 
 
+class TestScanCLI:
+    @pytest.fixture
+    def fixtures_dir(self):
+        from tests.conftest import FIXTURE_DIR
+        return str(FIXTURE_DIR)
+
+    def test_scan_dir(self, fixtures_dir):
+        result = subprocess.run(
+            [sys.executable, "-m", "rpcpeek", "--scan", fixtures_dir],
+            capture_output=True, text=True,
+        )
+        assert result.returncode == 0
+        assert "MpSvc" in result.stdout
+        assert "lsasrv" in result.stdout
+        assert "empty_norpc" not in result.stdout
+
+    def test_scan_single_dll(self, fixture_dll):
+        result = subprocess.run(
+            [sys.executable, "-m", "rpcpeek", "--scan", str(fixture_dll)],
+            capture_output=True, text=True,
+        )
+        assert result.returncode == 0
+        assert "MpSvc" in result.stdout
+        assert "interface" in result.stdout
+
+    def test_scan_norpc_exit_1(self, norpc_dll):
+        result = subprocess.run(
+            [sys.executable, "-m", "rpcpeek", "--scan", str(norpc_dll)],
+            capture_output=True, text=True,
+        )
+        assert result.returncode == 1
+        assert result.stdout.strip() == ""
+
+    def test_scan_with_interface_filter(self, fixtures_dir):
+        result = subprocess.run(
+            [sys.executable, "-m", "rpcpeek", "--scan", fixtures_dir, "--interface", "12345778"],
+            capture_output=True, text=True,
+        )
+        assert result.returncode == 0
+        assert "lsasrv" in result.stdout
+        assert "MpSvc" not in result.stdout
+
+    def test_scan_dedup_counts(self, fixture_dll):
+        result = subprocess.run(
+            [sys.executable, "-m", "rpcpeek", "--scan", str(fixture_dll)],
+            capture_output=True, text=True,
+        )
+        assert result.returncode == 0
+        line = result.stdout.strip()
+        assert "3 interfaces" in line
+        assert "297 methods" in line
+
+
 class TestDiffCLI:
     def test_diff_same_file(self, fixture_dll):
         p = str(fixture_dll)

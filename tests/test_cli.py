@@ -6,7 +6,7 @@ import sys
 
 import pytest
 
-from rpcpeek.cli import main, print_table, print_summary, print_csv, print_diff, filter_interfaces, analyze_file
+from rpcpeek.cli import main, print_table, print_summary, print_scan, print_csv, print_diff, filter_interfaces, analyze_file
 from rpcpeek.models import RpcInterface, RpcMethod
 
 
@@ -165,6 +165,61 @@ class TestPrintDiff:
         assert "- method 1" in captured.out
 
 
+class TestPrintScan:
+    def test_basic_output(self, capsys):
+        iface_a = RpcInterface(uuid="AAAA-1111", method_count=5)
+        iface_b = RpcInterface(uuid="BBBB-2222", method_count=10)
+        results = [
+            {"file": "alpha.dll", "interfaces": [iface_a]},
+            {"file": "beta.dll", "interfaces": [iface_b]},
+        ]
+        print_scan(results)
+        captured = capsys.readouterr()
+        assert "alpha.dll" in captured.out
+        assert "beta.dll" in captured.out
+        assert "5" in captured.out
+        assert "10" in captured.out
+
+    def test_singular_forms(self, capsys):
+        iface = RpcInterface(uuid="AAAA-1111", method_count=1)
+        results = [{"file": "one.dll", "interfaces": [iface]}]
+        print_scan(results)
+        captured = capsys.readouterr()
+        assert "1 interface " in captured.out
+        assert "1 method" in captured.out
+        assert "interfaces" not in captured.out
+        assert "methods" not in captured.out
+
+    def test_plural_forms(self, capsys):
+        iface_a = RpcInterface(uuid="AAAA", method_count=10)
+        iface_b = RpcInterface(uuid="BBBB", method_count=20)
+        results = [{"file": "multi.dll", "interfaces": [iface_a, iface_b]}]
+        print_scan(results)
+        captured = capsys.readouterr()
+        assert "2 interfaces" in captured.out
+        assert "30 methods" in captured.out
+
+    def test_skips_empty(self, capsys):
+        results = [{"file": "empty.dll", "interfaces": []}]
+        print_scan(results)
+        captured = capsys.readouterr()
+        assert captured.out == ""
+
+    def test_deduplicates_by_uuid(self, capsys):
+        ndr20 = RpcInterface(uuid="AAAA-1111", method_count=5, syntax="ndr20")
+        ndr64 = RpcInterface(uuid="AAAA-1111", method_count=5, syntax="ndr64")
+        results = [{"file": "dual.dll", "interfaces": [ndr20, ndr64]}]
+        print_scan(results)
+        captured = capsys.readouterr()
+        assert "1 interface " in captured.out
+        assert "5 method" in captured.out
+
+    def test_empty_results(self, capsys):
+        print_scan([])
+        captured = capsys.readouterr()
+        assert captured.out == ""
+
+
 class TestPrintSummary:
     def test_summary_output(self, capsys):
         iface = RpcInterface(uuid="TEST", method_count=5)
@@ -271,6 +326,46 @@ class TestMainDirect:
         empty_dir.mkdir()
         code = run_main(monkeypatch, ["--dir", str(empty_dir)])
         assert code == 2
+
+    def test_scan_single_dll(self, fixture_dll, capsys, monkeypatch):
+        code = run_main(monkeypatch, ["--scan", str(fixture_dll)])
+        assert code == 0
+        captured = capsys.readouterr()
+        assert "MpSvc" in captured.out
+        assert "interface" in captured.out
+        assert "method" in captured.out
+
+    def test_scan_dir(self, capsys, monkeypatch):
+        from tests.conftest import FIXTURE_DIR
+        code = run_main(monkeypatch, ["--scan", str(FIXTURE_DIR)])
+        assert code == 0
+        captured = capsys.readouterr()
+        assert "MpSvc" in captured.out
+        assert "lsasrv" in captured.out
+
+    def test_scan_no_rpc_dll(self, norpc_dll, capsys, monkeypatch):
+        code = run_main(monkeypatch, ["--scan", str(norpc_dll)])
+        assert code == 1
+        captured = capsys.readouterr()
+        assert captured.out == ""
+
+    def test_scan_nonexistent_path(self, capsys, monkeypatch):
+        code = run_main(monkeypatch, ["--scan", "/nonexistent/path"])
+        assert code == 2
+
+    def test_scan_empty_dir(self, tmp_path, capsys, monkeypatch):
+        empty_dir = tmp_path / "empty"
+        empty_dir.mkdir()
+        code = run_main(monkeypatch, ["--scan", str(empty_dir)])
+        assert code == 2
+
+    def test_scan_with_interface_filter(self, capsys, monkeypatch):
+        from tests.conftest import FIXTURE_DIR
+        code = run_main(monkeypatch, ["--scan", str(FIXTURE_DIR), "--interface", "12345778"])
+        assert code == 0
+        captured = capsys.readouterr()
+        assert "lsasrv" in captured.out
+        assert "MpSvc" not in captured.out
 
 
 class TestCLISubprocess:

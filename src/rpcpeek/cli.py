@@ -86,6 +86,31 @@ def print_summary(results: list):
             print(f"{r['file']:<45} {n_iface:>10} {total_methods:>8}")
 
 
+def print_scan(results: list):
+    hits = []
+    for r in results:
+        seen = {}
+        for iface in r["interfaces"]:
+            if iface.uuid not in seen:
+                seen[iface.uuid] = iface.method_count
+        n_iface = len(seen)
+        total_methods = sum(seen.values())
+        if n_iface > 0:
+            hits.append((r["file"], n_iface, total_methods))
+
+    if not hits:
+        return
+
+    name_w = max(len(h[0]) for h in hits)
+    iface_w = max(len(str(h[1])) for h in hits)
+    method_w = max(len(str(h[2])) for h in hits)
+
+    for name, n_iface, n_methods in hits:
+        iw = "interface" if n_iface == 1 else "interfaces"
+        mw = "method" if n_methods == 1 else "methods"
+        print(f"{name:<{name_w}}  {n_iface:>{iface_w}} {iw:<10}  {n_methods:>{method_w}} {mw}")
+
+
 def print_diff(result_a: dict, result_b: dict):
     def iface_map(result):
         m = {}
@@ -150,6 +175,7 @@ def main():
   %(prog)s MpSvc.dll --method 161
   %(prog)s MpSvc.dll --format json
   %(prog)s MpSvc.dll --interface C503F532
+  %(prog)s --scan Platform/
   %(prog)s --diff old.dll new.dll""",
     )
     parser.add_argument("dll", nargs="?", help="Path to a single DLL to analyze")
@@ -160,6 +186,7 @@ def main():
     parser.add_argument("--method", type=int, default=None, help="Highlight a specific method index")
     parser.add_argument("--interface", default=None, help="Filter by interface UUID (substring match)")
     parser.add_argument("--summary", action="store_true", help="Only show files that have RPC interfaces")
+    parser.add_argument("--scan", metavar="PATH", help="Quick scan: one line per DLL with RPC interfaces")
     parser.add_argument("--diff", nargs=2, metavar="DLL", help="Compare two DLLs")
 
     args = parser.parse_args()
@@ -176,6 +203,33 @@ def main():
             sys.exit(2)
         print_diff(result_a, result_b)
         sys.exit(0)
+
+    if args.scan:
+        scan_path = Path(args.scan)
+        if scan_path.is_dir():
+            files = sorted(scan_path.glob("*.dll"))
+            if not files:
+                print(f"No DLLs found in {scan_path}", file=sys.stderr)
+                sys.exit(2)
+        elif scan_path.is_file():
+            files = [scan_path]
+        else:
+            print(f"Path not found: {scan_path}", file=sys.stderr)
+            sys.exit(2)
+
+        results = []
+        for f in files:
+            try:
+                result = analyze_file(f)
+                if args.interface:
+                    result = filter_interfaces(result, args.interface)
+                results.append(result)
+            except Exception:
+                pass
+
+        print_scan(results)
+        has_interfaces = any(r["interfaces"] for r in results)
+        sys.exit(0 if has_interfaces else 1)
 
     if not args.dll and not args.dir:
         parser.print_help()

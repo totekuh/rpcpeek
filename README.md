@@ -37,7 +37,13 @@ rpcpeek MpSvc.dll --method 161
 # Filter by interface UUID (substring match)
 rpcpeek lsasrv.dll --interface 12345778
 
-# Scan a directory of DLLs
+# Quick scan: which DLLs have RPC interfaces?
+rpcpeek --scan C:\Windows\System32\
+
+# Scan a single file
+rpcpeek --scan MpSvc.dll
+
+# Detailed directory summary (with header table)
 rpcpeek --dir C:\Windows\System32\ --summary
 
 # Compare method tables across two builds
@@ -73,6 +79,16 @@ Each interface includes `uuid`, `method_count`, `syntax` (`ndr20` or `ndr64`), a
 ### CSV output
 
 One row per method. Columns: `file`, `uuid`, `name`, `syntax`, `index`, `handler_rva`, `proc_num`, `stack_size`, `param_count`. Good for grep, awk, or loading into a spreadsheet.
+
+### Scan output
+
+```
+MpSvc.dll              3 interfaces   297 methods
+DefenderAiPlatform.dll 1 interface      6 methods
+DsMain.dll             1 interface      8 methods
+```
+
+One line per DLL that has RPC interfaces. Deduplicates NDR20/NDR64 registrations — a UUID registered in both syntaxes counts as one interface. Accepts a directory or a single file. Combine with `--interface` to filter by UUID substring.
 
 ### Diff output
 
