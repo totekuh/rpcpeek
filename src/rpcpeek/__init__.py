@@ -1,4 +1,4 @@
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 
 from rpcpeek.models import RpcInterface, RpcMethod, Section, PEInfo
 from rpcpeek.pe import PEParser
