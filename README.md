@@ -93,12 +93,6 @@ One row per method. Columns: `file`, `uuid`, `name`, `syntax`, `index`, `handler
 - `1` — no RPC interfaces found
 - `2` — file not found or parse error
 
-## Limitations
-
-- **x64 only** — pointer sizes are hardcoded to 8 bytes. 32-bit PEs get a warning and empty results.
-- **NDR20 and NDR64** — covers the two standard transfer syntaxes. Custom or proprietary syntaxes are not parsed.
-- **Static registration only** — if a DLL builds its dispatch table at runtime, the tool won't see it. Extremely uncommon in practice.
-
 ## License
 
 MIT
