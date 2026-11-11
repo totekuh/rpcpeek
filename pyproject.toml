@@ -1,0 +1,23 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "rpcpeek"
+version = "0.1.0"
+description = "Extract RPC interface definitions and method tables from Windows PE binaries"
+requires-python = ">=3.10"
+license = "MIT"
+readme = "README.md"
+
+[project.scripts]
+rpcpeek = "rpcpeek.cli:main"
+
+[project.optional-dependencies]
+dev = ["pytest"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/rpcpeek"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
